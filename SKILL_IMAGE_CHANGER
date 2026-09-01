@@ -1,0 +1,23 @@
+---
+name: portrait-aging-editor
+description: "Edit a supplied portrait into an older, bearded person wearing black clothing while preserving the person’s identity, pose, background, framing, and exact pixel dimensions."
+---
+
+# Portrait Aging Editor
+
+Use this skill only for a user-supplied portrait that needs to become an elderly version of the same adult, with a beard and black clothing. It is not for generating a new person or changing a person’s identity.
+
+Use the built-in image-generation editor. First inspect any local target image with `view_image` so it is available to the editor.
+
+Ask for clarification only when an essential visual choice is missing. Otherwise use these defaults:
+
+- Age the person naturally to roughly 70–75, adding realistic wrinkles, grey hair, and a full, neatly groomed grey-and-black beard.
+- Change the visible clothing to black formal clothing.
+- Preserve the face's recognizable identity, expression, head position, gaze, camera angle, lighting, background, crop, and pose.
+- Do not add text, watermarks, accessories, other people, or background changes.
+
+In the editing prompt, explicitly state that the input is the edit target and repeat every preserved feature as an invariant. Request photorealistic output.
+
+After editing, verify the visual result. Determine the source image’s exact width and height, then resize the final output to those exact pixel dimensions if the editor did not retain them. Save a new file instead of overwriting the source unless the user explicitly requests replacement.
+
+Report the output path, final dimensions, and that the built-in image editor was used.
