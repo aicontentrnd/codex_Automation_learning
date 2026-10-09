@@ -44,8 +44,8 @@ new idempotency key creates a new attempt and invalidates stale results.
 ## Deploy and connect ChatGPT
 
 1. Deploy one application process with persistent `data/` storage. Install the
-   locked dependencies or use the provided Dockerfile. Put an HTTPS reverse proxy
-   in front of it; `deploy/nginx.conf` provides an example with body and rate limits.
+   locked Python dependencies on the host. Put an HTTPS reverse proxy in front of it;
+   `deploy/nginx.conf` provides an example with body and rate limits.
    `PUBLIC_BASE_URL` must match the browser/ChatGPT origin and forwarded Host header.
 2. Set the production variables in `.env.example` through your secret manager.
    Generate and retain a Fernet `SUBSCRIPTION_ENCRYPTION_KEY`; it encrypts callback
