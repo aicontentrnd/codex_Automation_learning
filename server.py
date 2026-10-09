@@ -16,7 +16,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
-from auth import Directory, SCOPES, Settings
+from auth import Directory, Principal, SCOPES, Settings
 from common import Problem, canonical
 from events import EVENT, Events
 from secure_http import SafeHTTPS
@@ -61,7 +61,11 @@ class BoundaryMiddleware:
             if request.headers.get('host') != urlsplit(self.settings.public_url).netloc:
                 raise Problem(403, 'Host not allowed')
             if request.url.path == '/mcp' or request.url.path.startswith('/jobs'):
-                principal = await asyncio.to_thread(self.directory.authenticate, request.headers.get('authorization'))
+                if self.settings.demo_mode and request.url.path.startswith('/jobs'):
+                    tenant = await asyncio.to_thread(self.directory.demo_tenant)
+                    principal = Principal('demo', tenant)
+                else:
+                    principal = await asyncio.to_thread(self.directory.authenticate, request.headers.get('authorization'))
                 scope.setdefault('state', {})['principal'] = principal
         except Problem as exc:
             headers = {}
@@ -102,6 +106,8 @@ def create_app(settings=None, *, transport=None, run_worker=True, clock=None):
     settings = settings or Settings.from_env()
     settings.validate()
     directory = Directory(settings)
+    if settings.demo_mode:
+        directory.demo_tenant()
     store = Store(settings.database, settings.image_dir, **({'clock': clock} if clock else {}))
     events = Events(store, settings.encryption_key, directory, transport or SafeHTTPS(settings.callback_hosts), **({'clock': clock} if clock else {}))
 

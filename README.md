@@ -29,15 +29,18 @@ set +a
 
 Run from the repository directory. The initializer creates private local-only
 credentials in `.env` and `data/local-tokens.json` and refuses to overwrite them.
-Use the token from that private JSON file in the browser's Application token
-field. The browser retains it only in memory. No services or paid generation APIs
-are automatically connected. The server binds to loopback port 8000 by default.
+The local initializer enables the browser test page without a token. Existing
+local `.env` files need `PUBLIC_DEMO_MODE=true` added. No services or paid
+generation APIs are automatically connected. The server binds to loopback port
+8000 by default.
 
 Subscribe before creating requests. Requests without a matching subscriber stay
 pending; after subscribing, use **Retry request**. The UI accepts a prompt, aspect
 ratio and optional project/queue filters. `POST /jobs` also accepts dimensions,
-HTTPS reference image URLs and output preferences. Send a bearer token and a
-unique `Idempotency-Key` header (8–128 characters), reusing it on network retries.
+HTTPS reference image URLs and output preferences. The test page needs
+`PUBLIC_DEMO_MODE=true` and no token. API clients outside demo mode send a bearer
+token. Send a unique `Idempotency-Key` header (8–128 characters) for creation,
+reusing it on network retries.
 `GET /jobs/{id}` shows status and delivery counts. `POST /jobs/{id}/retry` with a
 new idempotency key creates a new attempt and invalidates stale results.
 
@@ -50,6 +53,10 @@ new idempotency key creates a new attempt and invalidates stale results.
 2. Set the production variables in `.env.example` through your secret manager.
    Generate and retain a Fernet `SUBSCRIPTION_ENCRYPTION_KEY`; it encrypts callback
    secrets. Back up that key separately and keep it stable across restarts.
+   For a temporary public test page, set `PUBLIC_DEMO_MODE=true`. It uses the
+   sole active tenant from `AUTH_SUBJECTS_FILE` for browser requests. Anyone
+   with the page URL can create and view demo jobs; turn the flag off after
+   testing. The MCP endpoint still requires OAuth.
 3. Configure an OAuth 2.1 identity provider supporting PKCE, the MCP resource
    parameter, and a supported ChatGPT client registration method (CIMD, DCR, or a
    predefined client). Configure its issuer and JWKS URLs. The access token audience
@@ -71,10 +78,9 @@ new idempotency key creates a new attempt and invalidates stale results.
 7. Submit a prompt in the app. Check delivery progress, the task run in ChatGPT,
    and the resulting image or clear failure reason in the app.
 
-Public deployment requires OAuth mode; static credentials are accepted only with
-a loopback HTTP public origin. The browser is a minimal token-entry application,
-not an OAuth login portal. Supply it a valid access token for your account when
-using the deployed application, or integrate the REST routes into your own login UI.
+Public deployment requires OAuth mode for the MCP endpoint. The token-free
+browser page works when `PUBLIC_DEMO_MODE=true` and the account file contains
+exactly one active tenant.
 
 ## Protocol and operation details
 
@@ -100,7 +106,7 @@ HTTP failures, redirects, 410 and 413 are terminal; 410 also disables the subscr
 Status `event_delivered` means a callback accepted the event, not image completion.
 A 30-minute processing claim prevents competing task executions. Identical final
 submissions return the saved result; conflicting or stale attempts fail. Image URLs
-are authenticated relative paths; the UI downloads them using its bearer token.
+are relative paths; access requires a bearer token unless demo mode is enabled.
 
 Migrations run automatically, preserving the original starter's jobs and events.
 Back up SQLite and images together while the service is stopped (or use SQLite's

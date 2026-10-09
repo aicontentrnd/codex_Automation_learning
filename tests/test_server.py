@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -111,6 +112,21 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(event['delivery'], ['webhook'])
         self.assertIn('queue_id', event['inputSchema']['properties'])
         self.assertEqual(self.rpc('events/list', {'cursor': 'bad'}).json()['error']['code'], -32602)
+
+    def test_demo_page_creates_event_without_browser_token_but_mcp_stays_protected(self):
+        self.tokens.write_text(json.dumps({TOKEN_A: 'a'}))
+        demo_settings = replace(self.settings, demo_mode=True)
+        demo_app = create_app(demo_settings, transport=self.receiver, run_worker=False, clock=self.clock)
+        self.subscribe()
+        with TestClient(demo_app, base_url=demo_settings.public_url) as browser:
+            self.assertEqual(browser.post('/mcp', json={}).status_code, 401)
+            response = browser.post('/jobs', headers={'Idempotency-Key': 'demo-request-123'},
+                                    json={'prompt': 'A mountain house'})
+            self.assertEqual(response.status_code, 201, response.text)
+            jid = response.json()['job_id']
+            self.assertEqual(browser.get(f'/jobs/{jid}').status_code, 200)
+            self.assertTrue(demo_app.state.events.tick())
+            self.assertEqual(json.loads(self.receiver.deliveries()[0][1])['data']['job_id'], jid)
 
     def test_subscribe_refresh_encryption_and_signed_challenge(self):
         first = self.subscribe(arguments={'queue_id': 'q', 'project_id': 'p'})

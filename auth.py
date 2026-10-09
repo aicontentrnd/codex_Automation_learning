@@ -34,6 +34,7 @@ class Settings:
     issuer: str = ''
     jwks_url: str = ''
     callback_hosts: tuple = ()
+    demo_mode: bool = False
 
     @classmethod
     def from_env(cls):
@@ -43,7 +44,8 @@ class Settings:
                    tokens_json=os.getenv('APP_TOKENS_JSON', '{}'), tokens_file=os.getenv('AUTH_TOKENS_FILE', ''),
                    subjects_file=os.getenv('AUTH_SUBJECTS_FILE', ''), issuer=os.getenv('AUTH_ISSUER_URL', ''),
                    jwks_url=os.getenv('AUTH_JWKS_URL', ''),
-                   callback_hosts=tuple(x.strip() for x in os.getenv('CALLBACK_ALLOWED_HOSTS', '').split(',') if x.strip()))
+                   callback_hosts=tuple(x.strip() for x in os.getenv('CALLBACK_ALLOWED_HOSTS', '').split(',') if x.strip()),
+                   demo_mode=os.getenv('PUBLIC_DEMO_MODE', '').lower() == 'true')
 
     def validate(self):
         parts = urlsplit(self.public_url)
@@ -105,6 +107,13 @@ class Directory:
             return None
         subject = key if self.settings.auth_mode == 'oauth' else 'tenant:' + tenant
         return Principal(subject, tenant)
+
+    def demo_tenant(self):
+        accounts = (self._principal(key, value) for key, value in self._entries().items())
+        tenants = {account.tenant for account in accounts if account}
+        if len(tenants) != 1:
+            raise Problem(503, 'Demo mode requires exactly one active tenant')
+        return tenants.pop()
 
     def active(self, subject, tenant):
         for key, value in self._entries().items():
