@@ -1,0 +1,7 @@
+
+body { font: 16px system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; }
+label { display: block; margin: 1rem 0; }
+input, textarea, button { font: inherit; box-sizing: border-box; width: 100%; padding: .6rem; }
+textarea { min-height: 8rem; }
+button { cursor: pointer; }
+img { max-width: 100%; height: auto; }
