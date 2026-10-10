@@ -2,7 +2,7 @@
 
 Automated/local:
 - [x] Official SDK discovery and tool/event listing.
-- [x] Persistent, tenant-scoped subscriptions and canonical filter identity.
+- [x] Persistent, tenant-scoped subscriptions.
 - [x] Correct signed challenge; wrong challenge/key rejected.
 - [x] Encrypted signing keys and refresh with dual-key rotation.
 - [x] Expiration/revocation across a restart; idempotent unsubscription.

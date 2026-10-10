@@ -15,10 +15,8 @@ form.addEventListener('submit', async (event) => {
   retryButton.hidden = true;
   status.textContent = 'Creating request…';
   const body = { prompt: document.querySelector('#prompt').value };
-  for (const [id, key] of [['ratio', 'aspect_ratio'], ['project', 'project_id'], ['queue', 'queue_id']]) {
-    const value = document.querySelector(`#${id}`).value.trim();
-    if (value) body[key] = value;
-  }
+  const ratio = document.querySelector('#ratio').value.trim();
+  if (ratio) body.aspect_ratio = ratio;
   const serialized = JSON.stringify(body);
   if (!pendingRequest || pendingRequest.body !== serialized) {
     pendingRequest = { key: crypto.randomUUID(), body: serialized };

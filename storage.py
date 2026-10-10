@@ -27,8 +27,6 @@ MIME = {'image/png': 'PNG', 'image/jpeg': 'JPEG', 'image/webp': 'WEBP'}
 class JobInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     prompt: str = Field(min_length=1, max_length=16000)
-    project_id: str | None = Field(default=None, min_length=1, max_length=128)
-    queue_id: str | None = Field(default=None, min_length=1, max_length=128)
     aspect_ratio: str | None = Field(default=None, pattern=r'^[1-9]\d{0,2}:[1-9]\d{0,2}$')
     width: StrictInt | None = Field(default=None, ge=1, le=8192)
     height: StrictInt | None = Field(default=None, ge=1, le=8192)
@@ -146,14 +144,15 @@ class Store:
 
     def _event(self, db, row):
         stamp = self.clock()
-        data = {k: row[k] for k in ('project_id', 'queue_id', 'aspect_ratio', 'attempt')}
+        data = {k: row[k] for k in ('aspect_ratio', 'attempt')}
         data.update(job_id=row['id'], prompt_preview=row['prompt'][:100], created_at=iso(stamp))
         eid = 'evt_' + uuid.uuid4().hex
         db.execute('INSERT INTO event_outbox VALUES (?,?,?,?,?,?)', (eid, row['tenant'], row['id'], 'image.requested', canonical(data), iso(stamp)))
-        subscriptions = db.execute('SELECT id, arguments FROM subscriptions WHERE tenant=? AND active=1 AND expires_at>?', (row['tenant'], stamp)).fetchall()
+        subscriptions = db.execute('''SELECT id FROM subscriptions
+            WHERE tenant=? AND active=1 AND expires_at>? AND arguments=?''',
+            (row['tenant'], stamp, canonical({}))).fetchall()
         for subscription in subscriptions:
-            if all(data.get(k) == v for k, v in json.loads(subscription['arguments']).items()):
-                db.execute('INSERT INTO deliveries (event_id, subscription_id, available_at) VALUES (?,?,?)', (eid, subscription['id'], stamp))
+            db.execute('INSERT INTO deliveries (event_id, subscription_id, available_at) VALUES (?,?,?)', (eid, subscription['id'], stamp))
         return eid
 
     def _idempotency(self, db, tenant, key, fingerprint):
@@ -175,7 +174,7 @@ class Store:
                 return cached
             jid, stamp = 'img_' + uuid.uuid4().hex, iso(self.clock())
             db.execute('''INSERT INTO jobs (id,tenant,prompt,project_id,queue_id,aspect_ratio,width,height,reference_urls,output_preferences,status,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (jid, tenant, args.prompt, args.project_id, args.queue_id, args.aspect_ratio,
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (jid, tenant, args.prompt, None, None, args.aspect_ratio,
                 args.width, args.height, canonical(args.reference_image_urls), canonical(args.output_preferences), 'pending', stamp, stamp))
             row = dict(db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
             self._event(db, row)

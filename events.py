@@ -22,18 +22,15 @@ from secure_http import DestinationError, SafeHTTPS, callback_url
 
 log = logging.getLogger(__name__)
 EVENT_NAME = 'image.requested'
-FILTER_SCHEMA = {'type': 'object', 'properties': {
-    'project_id': {'type': 'string', 'minLength': 1, 'maxLength': 128},
-    'queue_id': {'type': 'string', 'minLength': 1, 'maxLength': 128}}, 'additionalProperties': False}
+FILTER_SCHEMA = {'type': 'object', 'properties': {}, 'additionalProperties': False}
 EVENT = {'name': EVENT_NAME,
          'description': 'Triggered when an authorized application user creates a new AI image-generation request.',
          'delivery': ['webhook'], 'inputSchema': FILTER_SCHEMA,
          'payloadSchema': {'type': 'object', 'properties': {
-             'job_id': {'type': 'string'}, 'project_id': {'type': ['string', 'null']},
-             'queue_id': {'type': ['string', 'null']}, 'prompt_preview': {'type': 'string', 'maxLength': 100},
+             'job_id': {'type': 'string'}, 'prompt_preview': {'type': 'string', 'maxLength': 100},
              'aspect_ratio': {'type': ['string', 'null']}, 'created_at': {'type': 'string', 'format': 'date-time'},
              'attempt': {'type': 'integer', 'minimum': 1}},
-             'required': ['job_id', 'project_id', 'queue_id', 'prompt_preview', 'aspect_ratio', 'created_at', 'attempt'],
+             'required': ['job_id', 'prompt_preview', 'aspect_ratio', 'created_at', 'attempt'],
              'additionalProperties': False}}
 
 
@@ -69,8 +66,8 @@ class Events:
         name, arguments = params.get('name'), params.get('arguments', {})
         if name != EVENT_NAME:
             raise MCPError(-32011, 'Unknown event', {'kind': 'event'})
-        if not isinstance(arguments, dict) or any(k not in ('project_id', 'queue_id') or not isinstance(v, str) or not 1 <= len(v) <= 128 for k, v in arguments.items()):
-            raise MCPError(-32602, 'Invalid event filters')
+        if arguments != {}:
+            raise MCPError(-32602, 'This event does not accept subscription arguments')
         delivery = params.get('delivery', {})
         if not isinstance(delivery, dict) or delivery.get('mode') != 'webhook':
             raise MCPError(-32014, 'Only webhook delivery is supported', {'feature': 'deliveryMode'})

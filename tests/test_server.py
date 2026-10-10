@@ -110,7 +110,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(self.rpc('tools/list').json()['result']['tools']), 3)
         event = self.rpc('events/list').json()['result']['events'][0]
         self.assertEqual(event['delivery'], ['webhook'])
-        self.assertIn('queue_id', event['inputSchema']['properties'])
+        self.assertEqual(event['inputSchema']['properties'], {})
         self.assertEqual(self.rpc('events/list', {'cursor': 'bad'}).json()['error']['code'], -32602)
 
     def test_demo_page_creates_event_without_browser_token_but_mcp_stays_protected(self):
@@ -129,8 +129,8 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(json.loads(self.receiver.deliveries()[0][1])['data']['job_id'], jid)
 
     def test_subscribe_refresh_encryption_and_signed_challenge(self):
-        first = self.subscribe(arguments={'queue_id': 'q', 'project_id': 'p'})
-        second = self.subscribe(arguments={'project_id': 'p', 'queue_id': 'q'})
+        first = self.subscribe()
+        second = self.subscribe()
         self.assertEqual(first['id'], second['id'])
         self.assertEqual(len(self.receiver.records), 1)
         _, body, headers = self.receiver.records[0]
@@ -152,8 +152,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.rpc('events/subscribe', params).json()['error']['code'], -32602)
 
     def test_end_to_end_and_duplicate_result(self):
-        self.subscribe(arguments={'project_id': 'p'})
-        jid = self.create(project_id='p')
+        self.subscribe()
+        jid = self.create()
         self.assertTrue(self.app.state.events.tick())
         event = json.loads(self.receiver.deliveries()[0][1])
         self.assertEqual(event['data']['job_id'], jid)
@@ -169,20 +169,19 @@ class ServerTests(unittest.TestCase):
         Image.open(io.BytesIO(image.content)).verify()
         self.assertEqual(self.client.get(f'/jobs/{jid}/image', headers={'Authorization': f'Bearer {TOKEN_B}'}).status_code, 404)
 
-    def test_filters_tenant_isolation_and_unsubscribe(self):
-        self.subscribe(arguments={'project_id': 'p', 'queue_id': 'q'})
-        self.create(project_id='other', queue_id='q')
-        self.create(project_id='p', queue_id='q', token=TOKEN_B)
+    def test_tenant_isolation_and_unsubscribe(self):
+        self.subscribe()
+        self.create(token=TOKEN_B)
         self.assertFalse(self.app.state.events.tick())
-        jid = self.create(project_id='p', queue_id='q')
+        jid = self.create()
         self.assertTrue(self.tool('get_image_request', {'job_id': jid}, TOKEN_B)['result']['isError'])
-        params = self.subscription(arguments={'project_id': 'p', 'queue_id': 'q'})
+        params = self.subscription()
         self.rpc('events/unsubscribe', params, TOKEN_B)
         self.assertTrue(self.app.state.events.tick())
         self.assertEqual(len(self.receiver.deliveries()), 1)
         self.rpc('events/unsubscribe', params)
         self.rpc('events/unsubscribe', params)
-        self.create(project_id='p', queue_id='q')
+        self.create()
         self.assertFalse(self.app.state.events.tick())
 
     def test_expiration_restart_and_revocation(self):

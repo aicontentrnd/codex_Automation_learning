@@ -4,7 +4,7 @@ A standalone application for the initially empty repository. Python 3.12+, the
 official MCP Python SDK 2.3.0, SQLite, and local image storage implement:
 
 - MCP 2026-07-28 discovery, three image tools, and the documented OpenAI Events methods.
-- Tenant-scoped jobs and filters, persistent subscriptions, expiration/refresh,
+- Tenant-scoped jobs, persistent subscriptions, expiration/refresh,
   encrypted signing secrets, signed callback challenges, and key rotation.
 - Transactional event creation, persistent delivery attempts, bounded exponential
   retries, stable event IDs, and fresh Standard Webhooks signatures on every attempt.
@@ -35,8 +35,8 @@ generation APIs are automatically connected. The server binds to loopback port
 8000 by default.
 
 Subscribe before creating requests. Requests without a matching subscriber stay
-pending; after subscribing, use **Retry request**. The UI accepts a prompt, aspect
-ratio and optional project/queue filters. `POST /jobs` also accepts dimensions,
+pending; after subscribing, use **Retry request**. The UI accepts a prompt and aspect
+ratio. `POST /jobs` also accepts dimensions,
 HTTPS reference image URLs and output preferences. The test page needs
 `PUBLIC_DEMO_MODE=true` and no token. API clients outside demo mode send a bearer
 token. Send a unique `Idempotency-Key` header (8–128 characters) for creation,
@@ -73,8 +73,8 @@ new idempotency key creates a new attempt and invalidates stale results.
    `/mcp` endpoint, configure OAuth, and select **Create as a plugin**. Review its
    tools and `image.requested` event. Refresh/rescan after changing metadata.
 6. Start a **Work** chat on ChatGPT web, or choose **Work and Cloud** in the desktop
-   app. Paste [the reusable task instructions](docs/chatgpt-task.md), adding any
-   desired project/queue filter. Confirm subscription and callback verification.
+   app. Paste [the reusable task instructions](docs/chatgpt-task.md). Confirm
+   subscription and callback verification.
 7. Submit a prompt in the app. Check delivery progress, the task run in ChatGPT,
    and the resulting image or clear failure reason in the app.
 
@@ -90,8 +90,8 @@ headers. Prefer an MCP client SDK instead of hand-writing these envelopes. The
 Events extension is registered through the SDK's public handler and middleware
 hooks, including the extra `events` discovery capability.
 
-Subscriptions are keyed by principal, tenant, callback URL, event name and canonical
-filter JSON. Default and maximum lifetime is 24 hours. A requested shorter positive
+Subscriptions are keyed by principal, tenant, callback URL and event name. Subscription
+arguments must be empty. Default and maximum lifetime is 24 hours. A requested shorter positive
 `ttlMs` is honored; null grants a finite day. Cursors are null because protocol replay
 is not supported. Deliveries already queued for active subscriptions survive process
 restarts; events missed while unsubscribed/expired are not replayed. Refresh secrets
@@ -128,7 +128,7 @@ node --check app.js
 
 Automated tests use a mocked ChatGPT callback and actual SDK HTTP requests. They
 cover discovery, schemas, subscription identity/refresh, encryption, challenge and
-signature validation, secret rotation, filtering, tenant isolation, unsubscription,
+signature validation, secret rotation, tenant isolation, unsubscription,
 expiry/restart/revocation, retry statuses and limits, job claims, safe image ingestion,
 idempotency, failures, retries and completed application updates. See
 [verification checklist](docs/verification.md) for deployment checks.
