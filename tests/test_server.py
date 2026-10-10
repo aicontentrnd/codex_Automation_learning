@@ -7,8 +7,6 @@ import tempfile
 import time
 import unittest
 import uuid
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
@@ -16,11 +14,10 @@ from PIL import Image
 from starlette.testclient import TestClient
 from standardwebhooks import Webhook
 
-from auth import Settings
+from config import Settings
 from server import create_app, VERSION
 from secure_http import SafeHTTPS, DestinationError, callback_url, public_addresses
 
-TOKEN_A, TOKEN_B = 'a' * 40, 'b' * 40
 SECRET = 'whsec_' + base64.b64encode(b's' * 32).decode()
 NEW_SECRET = 'whsec_' + base64.b64encode(b'n' * 32).decode()
 buffer = io.BytesIO()
@@ -62,24 +59,22 @@ class ServerTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.clock = Clock()
         self.receiver = Receiver(self.clock)
-        self.tokens = Path(self.tmp.name) / 'tokens.json'
-        self.tokens.write_text(json.dumps({TOKEN_A: 'a', TOKEN_B: 'b'}))
         self.settings = Settings(database=self.tmp.name + '/db/jobs.sqlite3', image_dir=self.tmp.name + '/images',
-                                 encryption_key=Fernet.generate_key().decode(), tokens_file=str(self.tokens))
+                                 encryption_key=Fernet.generate_key().decode(), workspace_id='a')
         self.app = create_app(self.settings, transport=self.receiver, run_worker=False, clock=self.clock)
         self.client = TestClient(self.app, base_url=self.settings.public_url).__enter__()
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(self.client.__exit__, None, None, None)
 
-    def rpc(self, method, params=None, token=TOKEN_A, client=None):
+    def rpc(self, method, params=None, client=None):
         params = dict(params or {})
         params['_meta'] = {'io.modelcontextprotocol/protocolVersion': VERSION, 'io.modelcontextprotocol/clientCapabilities': {}}
-        headers = {'Authorization': f'Bearer {token}', 'MCP-Protocol-Version': VERSION, 'MCP-Method': method, 'Accept': 'application/json, text/event-stream'}
+        headers = {'MCP-Protocol-Version': VERSION, 'MCP-Method': method, 'Accept': 'application/json, text/event-stream'}
         if 'name' in params: headers['MCP-Name'] = params['name']
         return (client or self.client).post('/mcp', headers=headers, json={'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params})
 
-    def tool(self, name, args, token=TOKEN_A):
-        return self.rpc('tools/call', {'name': name, 'arguments': args}, token).json()
+    def tool(self, name, args):
+        return self.rpc('tools/call', {'name': name, 'arguments': args}).json()
 
     def subscription(self, arguments=None, secret=SECRET, **extra):
         return {'name': 'image.requested', 'arguments': arguments or {}, 'delivery': {'mode': 'webhook', 'url': 'https://receiver.example/callback', 'secret': secret}, **extra}
@@ -89,8 +84,8 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn('error', response, response)
         return response['result']
 
-    def create(self, token=TOKEN_A, key=None, **extra):
-        response = self.client.post('/jobs', headers={'Authorization': f'Bearer {token}', 'Idempotency-Key': key or str(uuid.uuid4())}, json={'prompt': 'A mountain house', **extra})
+    def create(self, key=None, **extra):
+        response = self.client.post('/jobs', headers={'Idempotency-Key': key or str(uuid.uuid4())}, json={'prompt': 'A mountain house', **extra})
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()['job_id']
 
@@ -113,20 +108,23 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(event['inputSchema']['properties'], {})
         self.assertEqual(self.rpc('events/list', {'cursor': 'bad'}).json()['error']['code'], -32602)
 
-    def test_demo_page_creates_event_without_browser_token_but_mcp_stays_protected(self):
-        self.tokens.write_text(json.dumps({TOKEN_A: 'a'}))
-        demo_settings = replace(self.settings, demo_mode=True)
-        demo_app = create_app(demo_settings, transport=self.receiver, run_worker=False, clock=self.clock)
-        self.subscribe()
-        with TestClient(demo_app, base_url=demo_settings.public_url) as browser:
-            self.assertEqual(browser.post('/mcp', json={}).status_code, 401)
-            response = browser.post('/jobs', headers={'Idempotency-Key': 'demo-request-123'},
-                                    json={'prompt': 'A mountain house'})
-            self.assertEqual(response.status_code, 201, response.text)
-            jid = response.json()['job_id']
-            self.assertEqual(browser.get(f'/jobs/{jid}').status_code, 200)
-            self.assertTrue(demo_app.state.events.tick())
-            self.assertEqual(json.loads(self.receiver.deliveries()[0][1])['data']['job_id'], jid)
+    def test_noauth_metadata_and_removed_frontend(self):
+        for method in ('server/discover', 'tools/list', 'events/list'):
+            response = self.rpc(method)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn('www-authenticate', response.headers)
+        tools = self.rpc('tools/list').json()['result']['tools']
+        for tool in tools:
+            self.assertEqual(tool['securitySchemes'], [{'type': 'noauth'}])
+        for path in ('/', '/app.js', '/style.css', '/.well-known/oauth-protected-resource',
+                     '/.well-known/oauth-protected-resource/mcp'):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 404)
+            self.assertNotIn('www-authenticate', response.headers)
+        # Even a stale client token cannot change the shared storage namespace.
+        jid = self.create()
+        response = self.client.get(f'/jobs/{jid}', headers={'Authorization': 'Bearer obsolete'})
+        self.assertEqual(response.status_code, 200)
 
     def test_subscribe_refresh_encryption_and_signed_challenge(self):
         first = self.subscribe()
@@ -164,19 +162,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(result['structuredContent']['status'], 'completed')
         repeat = self.tool('submit_generated_image', self.submission(job))['result']
         self.assertEqual(repeat['structuredContent'], result['structuredContent'])
-        image = self.client.get(f'/jobs/{jid}/image', headers={'Authorization': f'Bearer {TOKEN_A}'})
+        image = self.client.get(f'/jobs/{jid}/image')
         self.assertEqual(image.status_code, 200)
         Image.open(io.BytesIO(image.content)).verify()
-        self.assertEqual(self.client.get(f'/jobs/{jid}/image', headers={'Authorization': f'Bearer {TOKEN_B}'}).status_code, 404)
 
-    def test_tenant_isolation_and_unsubscribe(self):
+    def test_storage_namespace_and_unsubscribe(self):
         self.subscribe()
-        self.create(token=TOKEN_B)
+        self.app.state.store.create('other-workspace', {'prompt': 'Other workspace'}, 'other-key-123')
         self.assertFalse(self.app.state.events.tick())
         jid = self.create()
-        self.assertTrue(self.tool('get_image_request', {'job_id': jid}, TOKEN_B)['result']['isError'])
         params = self.subscription()
-        self.rpc('events/unsubscribe', params, TOKEN_B)
         self.assertTrue(self.app.state.events.tick())
         self.assertEqual(len(self.receiver.deliveries()), 1)
         self.rpc('events/unsubscribe', params)
@@ -184,7 +179,7 @@ class ServerTests(unittest.TestCase):
         self.create()
         self.assertFalse(self.app.state.events.tick())
 
-    def test_expiration_restart_and_revocation(self):
+    def test_expiration_and_restart(self):
         self.subscribe(ttlMs=1000)
         self.create()
         self.clock.advance(2)
@@ -193,10 +188,10 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(self.receiver.deliveries()), 0)
         self.subscribe()
         self.create()
-        self.tokens.write_text(json.dumps({TOKEN_B: 'b'}))
-        self.app.state.events.tick()
-        self.assertEqual(len(self.receiver.deliveries()), 0)
-        self.assertEqual(self.rpc('events/list').status_code, 401)
+        restored = create_app(self.settings, transport=self.receiver, run_worker=False, clock=self.clock)
+        self.assertTrue(restored.state.events.tick())
+        self.assertEqual(len(self.receiver.deliveries()), 1)
+        self.assertEqual(self.rpc('events/list').status_code, 200)
 
     def test_rotation_signs_both_keys(self):
         first = self.subscribe()
@@ -242,7 +237,7 @@ class ServerTests(unittest.TestCase):
         failure = {k: first[k] for k in ('job_id', 'attempt', 'claim_token')}
         failure.update(generation_status='failed', error_details='No compatible image generation tool')
         self.assertEqual(self.tool('submit_generated_image', failure)['result']['structuredContent']['status'], 'failed')
-        headers = {'Authorization': f'Bearer {TOKEN_A}', 'Idempotency-Key': 'retry-key-123'}
+        headers = {'Idempotency-Key': 'retry-key-123'}
         retry = self.client.post(f'/jobs/{jid}/retry', headers=headers)
         self.assertEqual(retry.status_code, 200)
         self.assertEqual(retry.json()['attempt'], 2)
@@ -253,11 +248,9 @@ class ServerTests(unittest.TestCase):
         jid = self.create(); job = self.claim(jid)
         args = self.submission(job); args['image_base64'] = 'AAAA'
         self.assertTrue(self.tool('submit_generated_image', args)['result']['isError'])
-        self.assertEqual(self.rpc('events/list', token='wrong').status_code, 401)
-        self.assertEqual(self.client.get('/', headers={'Origin': 'https://attacker.example'}).status_code, 403)
-        self.assertIn('blob:', self.client.get('/').headers['content-security-policy'])
-        self.assertEqual(self.client.get('/app.js').status_code, 200)
-        self.assertEqual(self.client.get('/style.css').status_code, 200)
+        self.assertEqual(self.client.get('/health', headers={'Origin': 'https://attacker.example'}).status_code, 403)
+        self.assertEqual(self.client.get('/health', headers={'Host': 'attacker.example'}).status_code, 403)
+        self.assertEqual(self.client.get('/health').json(), {'status': 'ok'})
 
 
 class NetworkTests(unittest.TestCase):

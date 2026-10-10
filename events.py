@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 EVENT_NAME = 'image.requested'
 FILTER_SCHEMA = {'type': 'object', 'properties': {}, 'additionalProperties': False}
 EVENT = {'name': EVENT_NAME,
-         'description': 'Triggered when an authorized application user creates a new AI image-generation request.',
+         'description': 'Triggered when the connected application creates a new AI image-generation request.',
          'delivery': ['webhook'], 'inputSchema': FILTER_SCHEMA,
          'payloadSchema': {'type': 'object', 'properties': {
              'job_id': {'type': 'string'}, 'prompt_preview': {'type': 'string', 'maxLength': 100},
@@ -54,8 +54,8 @@ def signed_headers(sid, event_id, body, keys, timestamp):
 
 
 class Events:
-    def __init__(self, store, encryption_key, directory, transport=None, clock=time.time):
-        self.store, self.directory, self.clock = store, directory, clock
+    def __init__(self, store, encryption_key, transport=None, clock=time.time):
+        self.store, self.clock = store, clock
         self.cipher = Fernet(encryption_key.encode() if isinstance(encryption_key, str) else encryption_key)
         self.transport = transport or SafeHTTPS()
         self.lock = threading.RLock()
@@ -92,8 +92,6 @@ class Events:
             raise MCPError(-32602, 'ttlMs must be a positive integer or null')
         duration = min(ttl / 1000, 86400)
         with self.lock:
-            if not self.directory.active(principal.subject, principal.tenant):
-                raise MCPError(-32012, 'Account access revoked')
             stamp = self.clock()
             with self.store.connect() as db:
                 count = db.execute('SELECT COUNT(*) FROM subscriptions WHERE principal=? AND active=1 AND expires_at>? AND id!=?', (principal.subject, stamp, sid)).fetchone()[0]
@@ -121,8 +119,6 @@ class Events:
                 with self.store.connect() as db:
                     db.execute('INSERT OR REPLACE INTO callback_verifications VALUES (?,?,?,?)', (principal.subject, url, key_hash, self.clock() + 300))
             stamp = self.clock()
-            if not self.directory.active(principal.subject, principal.tenant):
-                raise MCPError(-32012, 'Account access revoked')
             expires = stamp + duration
             with self.store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
@@ -167,8 +163,8 @@ class Events:
                     return False
                 item = dict(item)
                 ids = (item['event_id'], item['subscription_id'])
-                if not item['active'] or item['expires_at'] <= stamp or not self.directory.active(item['principal'], item['tenant']):
-                    db.execute("UPDATE deliveries SET state='canceled', last_error='expired_or_revoked' WHERE event_id=? AND subscription_id=?", ids)
+                if not item['active'] or item['expires_at'] <= stamp:
+                    db.execute("UPDATE deliveries SET state='canceled', last_error='expired_or_unsubscribed' WHERE event_id=? AND subscription_id=?", ids)
                     return True
                 db.execute("UPDATE deliveries SET state='sending', attempts=attempts+1, lease_until=? WHERE event_id=? AND subscription_id=?", (stamp + 60, *ids))
             event = {'eventId': item['event_id'], 'name': item['name'], 'timestamp': item['created_at'], 'data': json.loads(item['data']), 'cursor': None}

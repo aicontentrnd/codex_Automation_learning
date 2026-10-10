@@ -1,10 +1,9 @@
-"""Image application and MCP 2.0 server using the official Python SDK."""
+"""Image backend and MCP 2.0 server using the official Python SDK."""
 import asyncio
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from mcp import types
@@ -16,7 +15,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
-from auth import Directory, Principal, SCOPES, Settings
+from config import Settings, Workspace
 from common import Problem, canonical
 from events import EVENT, Events
 from secure_http import SafeHTTPS
@@ -24,7 +23,6 @@ from storage import GetRequest, JobID, Store, Submission
 
 VERSION = '2026-07-28'
 MAX_BODY = 12 * 1024 * 1024
-ROOT = Path(__file__).parent
 log = logging.getLogger(__name__)
 
 
@@ -47,9 +45,10 @@ TOOL_SPECS = [
 
 
 class BoundaryMiddleware:
-    """Authenticate before the MCP transport and REST routes; constrain browser origins."""
-    def __init__(self, app, directory, settings):
-        self.app, self.directory, self.settings = app, directory, settings
+    """Constrain HTTP hosts and origins without requiring authentication."""
+    def __init__(self, app, settings):
+        self.app, self.settings = app, settings
+        self.workspace = Workspace(settings.workspace_id)
 
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http':
@@ -61,20 +60,9 @@ class BoundaryMiddleware:
             if request.headers.get('host') != urlsplit(self.settings.public_url).netloc:
                 raise Problem(403, 'Host not allowed')
             if request.url.path == '/mcp' or request.url.path.startswith('/jobs'):
-                if self.settings.demo_mode and request.url.path.startswith('/jobs'):
-                    tenant = await asyncio.to_thread(self.directory.demo_tenant)
-                    principal = Principal('demo', tenant)
-                else:
-                    principal = await asyncio.to_thread(self.directory.authenticate, request.headers.get('authorization'))
-                scope.setdefault('state', {})['principal'] = principal
+                scope.setdefault('state', {})['workspace'] = self.workspace
         except Problem as exc:
-            headers = {}
-            if exc.status in (401, 403):
-                challenge = 'Bearer'
-                if self.settings.auth_mode == 'oauth':
-                    challenge += f' resource_metadata="{self.settings.public_url}/.well-known/oauth-protected-resource/mcp"'
-                headers['WWW-Authenticate'] = challenge
-            return await JSONResponse({'error': exc.message}, status_code=exc.status, headers=headers)(scope, receive, send)
+            return await JSONResponse({'error': exc.message}, status_code=exc.status)(scope, receive, send)
 
         async def secure_send(message):
             if message['type'] == 'http.response.start':
@@ -105,16 +93,13 @@ async def read_json(request):
 def create_app(settings=None, *, transport=None, run_worker=True, clock=None):
     settings = settings or Settings.from_env()
     settings.validate()
-    directory = Directory(settings)
-    if settings.demo_mode:
-        directory.demo_tenant()
     store = Store(settings.database, settings.image_dir, **({'clock': clock} if clock else {}))
-    events = Events(store, settings.encryption_key, directory, transport or SafeHTTPS(settings.callback_hosts), **({'clock': clock} if clock else {}))
+    events = Events(store, settings.encryption_key, transport or SafeHTTPS(settings.callback_hosts), **({'clock': clock} if clock else {}))
 
     def principal(ctx):
         if ctx.request is None:
-            raise MCPError(-32012, 'Authenticated HTTP context required')
-        return ctx.request.state.principal
+            raise MCPError(-32012, 'HTTP context required')
+        return ctx.request.state.workspace
 
     async def list_tools(ctx, params):
         tools = []
@@ -122,8 +107,7 @@ def create_app(settings=None, *, transport=None, run_worker=True, clock=None):
             tool = {'name': name, 'description': description, 'inputSchema': model.model_json_schema(),
                     'outputSchema': {'type': 'object'},
                     'annotations': {'readOnlyHint': readonly, 'destructiveHint': False, 'idempotentHint': True, 'openWorldHint': False}}
-            if settings.auth_mode == 'oauth':
-                tool['securitySchemes'] = [{'type': 'oauth2', 'scopes': SCOPES}]
+            tool['securitySchemes'] = [{'type': 'noauth'}]
             tools.append(types.Tool.model_validate(tool))
         return types.ListToolsResult(tools=tools)
 
@@ -154,9 +138,9 @@ def create_app(settings=None, *, transport=None, run_worker=True, clock=None):
         # middleware hook adds the documented OpenAI extension after projection.
         if isinstance(result, dict) and ctx.method == 'server/discover':
             result['capabilities']['events'] = {}
-        if isinstance(result, dict) and ctx.method == 'tools/list' and settings.auth_mode == 'oauth':
+        if isinstance(result, dict) and ctx.method == 'tools/list':
             for tool in result['tools']:
-                tool['securitySchemes'] = [{'type': 'oauth2', 'scopes': SCOPES}]
+                tool['securitySchemes'] = [{'type': 'noauth'}]
         return result
 
     sdk.middleware.append(openai_metadata)
@@ -183,21 +167,17 @@ def create_app(settings=None, *, transport=None, run_worker=True, clock=None):
     sdk.add_request_handler('events/subscribe', EventParams, subscribe)
     sdk.add_request_handler('events/unsubscribe', EventParams, unsubscribe)
 
-    async def static(request):
-        files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}
-        return FileResponse(ROOT / files[request.url.path])
-
     async def create_job(request):
         args = await read_json(request)
-        value = await asyncio.to_thread(store.create, request.state.principal.tenant, args, request.headers.get('idempotency-key'))
+        value = await asyncio.to_thread(store.create, request.state.workspace.tenant, args, request.headers.get('idempotency-key'))
         return JSONResponse(value, status_code=201)
 
     async def job_status(request):
-        value = await asyncio.to_thread(store.status, request.state.principal.tenant, request.path_params['jid'])
+        value = await asyncio.to_thread(store.status, request.state.workspace.tenant, request.path_params['jid'])
         return JSONResponse(value)
 
     async def image(request):
-        row = await asyncio.to_thread(store.get, request.state.principal.tenant, request.path_params['jid'])
+        row = await asyncio.to_thread(store.get, request.state.workspace.tenant, request.path_params['jid'])
         if not row['image_file']:
             raise Problem(404, 'Image not available')
         return FileResponse(store.image_dir / row['image_file'], media_type=row['media_type'])
@@ -206,13 +186,8 @@ def create_app(settings=None, *, transport=None, run_worker=True, clock=None):
         # Serializes against delivery so a canceled attempt cannot be sent after retry completes.
         def retry():
             with events.lock:
-                return store.retry(request.state.principal.tenant, request.path_params['jid'], request.headers.get('idempotency-key'))
+                return store.retry(request.state.workspace.tenant, request.path_params['jid'], request.headers.get('idempotency-key'))
         return JSONResponse(await asyncio.to_thread(retry))
-
-    async def metadata(request):
-        if settings.auth_mode != 'oauth':
-            raise Problem(404, 'OAuth is not configured in local token mode')
-        return JSONResponse({'resource': settings.public_url + '/mcp', 'authorization_servers': [settings.issuer], 'scopes_supported': SCOPES, 'bearer_methods_supported': ['header']})
 
     async def health(request):
         def check():
@@ -227,10 +202,9 @@ def create_app(settings=None, *, transport=None, run_worker=True, clock=None):
     async def handle_validation(request, exc):
         return JSONResponse({'error': 'Invalid request fields'}, status_code=400)
 
-    routes = [Route('/', static), Route('/app.js', static), Route('/style.css', static), Route('/health', health),
+    routes = [Route('/health', health),
               Route('/jobs', create_job, methods=['POST']), Route('/jobs/{jid}/retry', retry_job, methods=['POST']),
-              Route('/jobs/{jid}/image', image), Route('/jobs/{jid}', job_status),
-              Route('/.well-known/oauth-protected-resource/mcp', metadata), Route('/.well-known/oauth-protected-resource', metadata)]
+              Route('/jobs/{jid}/image', image), Route('/jobs/{jid}', job_status)]
     sdk_app = sdk.streamable_http_app(json_response=True, stateless_http=True, max_request_body_size=MAX_BODY,
                                    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
                                        allowed_hosts=[urlsplit(settings.public_url).netloc], allowed_origins=[settings.public_url]),
@@ -262,8 +236,8 @@ def create_app(settings=None, *, transport=None, run_worker=True, clock=None):
                 if task:
                     await task
     sdk_app.router.lifespan_context = lifespan
-    sdk_app.add_middleware(BoundaryMiddleware, directory=directory, settings=settings)
-    sdk_app.state.store, sdk_app.state.events, sdk_app.state.directory = store, events, directory
+    sdk_app.add_middleware(BoundaryMiddleware, settings=settings)
+    sdk_app.state.store, sdk_app.state.events = store, events
     return sdk_app
 
 
